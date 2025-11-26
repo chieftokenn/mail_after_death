@@ -148,3 +148,165 @@ create table public.notification_logs (
 create index notification_pack_idx on public.notification_logs(pack_id);
 alter table public.notification_logs enable row level security;
 
+-- Row Level Security Policies (owner-based)
+
+-- profiles
+create policy profiles_select on public.profiles
+  for select using (id = auth.uid());
+
+create policy profiles_insert on public.profiles
+  for insert with check (id = auth.uid());
+
+create policy profiles_update on public.profiles
+  for update using (id = auth.uid());
+
+-- packs
+create policy packs_select on public.packs
+  for select using (owner_id = auth.uid());
+
+create policy packs_insert on public.packs
+  for insert with check (owner_id = auth.uid());
+
+create policy packs_update on public.packs
+  for update using (owner_id = auth.uid());
+
+create policy packs_delete on public.packs
+  for delete using (owner_id = auth.uid());
+
+-- pack_contents
+create policy pack_contents_select on public.pack_contents
+  for select using (
+    exists (
+      select 1 from public.packs p
+      where p.id = pack_contents.pack_id and p.owner_id = auth.uid()
+    )
+  );
+
+create policy pack_contents_mutation on public.pack_contents
+  for all using (
+    exists (
+      select 1 from public.packs p
+      where p.id = pack_contents.pack_id and p.owner_id = auth.uid()
+    )
+  ) with check (
+    exists (
+      select 1 from public.packs p
+      where p.id = pack_contents.pack_id and p.owner_id = auth.uid()
+    )
+  );
+
+-- recipients
+create policy recipients_select on public.recipients
+  for select using (owner_id = auth.uid());
+
+create policy recipients_mutation on public.recipients
+  for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+
+-- pack_recipients
+create policy pack_recipients_select on public.pack_recipients
+  for select using (
+    exists (
+      select 1 from public.packs p
+      where p.id = pack_recipients.pack_id and p.owner_id = auth.uid()
+    )
+  );
+
+create policy pack_recipients_mutation on public.pack_recipients
+  for all using (
+    exists (
+      select 1 from public.packs p
+      where p.id = pack_recipients.pack_id and p.owner_id = auth.uid()
+    )
+  ) with check (
+    exists (
+      select 1 from public.packs p
+      where p.id = pack_recipients.pack_id and p.owner_id = auth.uid()
+    )
+  );
+
+-- recipient_payloads
+create policy recipient_payloads_select on public.recipient_payloads
+  for select using (
+    exists (
+      select 1
+      from public.pack_recipients pr
+      join public.packs p on p.id = pr.pack_id
+      where pr.id = recipient_payloads.pack_recipient_id
+        and p.owner_id = auth.uid()
+    )
+  );
+
+create policy recipient_payloads_mutation on public.recipient_payloads
+  for all using (
+    exists (
+      select 1
+      from public.pack_recipients pr
+      join public.packs p on p.id = pr.pack_id
+      where pr.id = recipient_payloads.pack_recipient_id
+        and p.owner_id = auth.uid()
+    )
+  ) with check (
+    exists (
+      select 1
+      from public.pack_recipients pr
+      join public.packs p on p.id = pr.pack_id
+      where pr.id = recipient_payloads.pack_recipient_id
+        and p.owner_id = auth.uid()
+    )
+  );
+
+-- trigger_rules
+create policy trigger_rules_policy on public.trigger_rules
+  for all using (
+    exists (
+      select 1 from public.packs p
+      where p.id = trigger_rules.pack_id and p.owner_id = auth.uid()
+    )
+  ) with check (
+    exists (
+      select 1 from public.packs p
+      where p.id = trigger_rules.pack_id and p.owner_id = auth.uid()
+    )
+  );
+
+-- heartbeat_events
+create policy heartbeat_events_policy on public.heartbeat_events
+  for all using (profile_id = auth.uid()) with check (profile_id = auth.uid());
+
+-- release_requests
+create policy release_requests_policy on public.release_requests
+  for all using (
+    exists (
+      select 1 from public.packs p
+      where p.id = release_requests.pack_id and p.owner_id = auth.uid()
+    )
+  ) with check (
+    exists (
+      select 1 from public.packs p
+      where p.id = release_requests.pack_id and p.owner_id = auth.uid()
+    )
+  );
+
+-- release_events
+create policy release_events_policy on public.release_events
+  for all using (
+    exists (
+      select 1
+      from public.pack_recipients pr
+      join public.packs p on p.id = pr.pack_id
+      where pr.id = release_events.pack_recipient_id
+        and p.owner_id = auth.uid()
+    )
+  );
+
+-- notification_logs
+create policy notification_logs_policy on public.notification_logs
+  for all using (
+    (profile_id = auth.uid())
+    or exists (
+      select 1 from public.packs p
+      where p.id = notification_logs.pack_id
+        and p.owner_id = auth.uid()
+    )
+  );
+
