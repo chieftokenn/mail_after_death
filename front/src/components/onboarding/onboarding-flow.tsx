@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useRouter } from "next/navigation";
 
+import { supabaseBrowserClient } from "@/lib/supabase-browser";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AuthPanel } from "@/components/auth/auth-panel";
 
 const STEPS = [
   {
@@ -32,7 +35,14 @@ const STEPS = [
     title: "Déclenchement",
     description: "Choisissez après combien de jours d'inactivité le pack se libère.",
   },
+  {
+    id: "save",
+    title: "Sauvegarder votre pack",
+    description: "Connectez-vous pour enregistrer définitivement votre pack.",
+  },
 ] as const;
+
+const STORAGE_KEY = "mad_pack_draft";
 
 const fadeVariants = {
   initial: { opacity: 0, y: 24 },
@@ -40,18 +50,164 @@ const fadeVariants = {
   exit: { opacity: 0, y: -20 },
 };
 
+const defaultFormData = {
+  packName: "",
+  packSummary: "",
+  recipientName: "",
+  recipientEmail: "",
+  message: "",
+  inactivityDays: 90,
+  manualUnlock: true,
+};
+
 export function OnboardingFlow() {
+  const router = useRouter();
   const [currentStep, setCurrentStep] = useState(0);
-  const [formData, setFormData] = useState({
-    packName: "Pack Héritage Digital",
-    packSummary: "Accès essentiels & messages privés",
-    recipientName: "Agnès Martin",
-    recipientEmail: "agnes@example.com",
-    message:
-      "Bonjour Agnès, tu trouveras ici les accès bancaires, codes coffre et quelques mots pour la famille...",
-    inactivityDays: 90,
-    manualUnlock: true,
-  });
+  const [formData, setFormData] = useState(defaultFormData);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  const handleSavePack = useCallback(async () => {
+    if (!supabaseBrowserClient) {
+      setSaveError("Supabase n'est pas configuré.");
+      return;
+    }
+
+    const {
+      data: { session },
+    } = await supabaseBrowserClient.auth.getSession();
+
+    if (!session) {
+      setSaveError("Vous devez être connecté pour sauvegarder.");
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError(null);
+
+    try {
+      // 1. Créer ou récupérer le profil
+      const { error: profileError } = await supabaseBrowserClient
+        .from("profiles")
+        .upsert(
+          {
+            id: session.user.id,
+            display_name: session.user.email?.split("@")[0] || "Utilisateur",
+          },
+          { onConflict: "id" },
+        )
+        .select()
+        .single();
+
+      if (profileError) throw profileError;
+
+      // 2. Créer le pack
+      const { data: pack, error: packError } = await supabaseBrowserClient
+        .from("packs")
+        .insert({
+          owner_id: session.user.id,
+          title: formData.packName,
+          summary: formData.packSummary,
+          status: "draft",
+        })
+        .select()
+        .single();
+
+      if (packError) throw packError;
+
+      // 3. Créer le destinataire
+      const { data: recipient, error: recipientError } = await supabaseBrowserClient
+        .from("recipients")
+        .insert({
+          owner_id: session.user.id,
+          full_name: formData.recipientName,
+          email: formData.recipientEmail,
+          preferred_channel: "email",
+        })
+        .select()
+        .single();
+
+      if (recipientError) throw recipientError;
+
+      // 4. Lier le pack au destinataire
+      const { error: linkError } = await supabaseBrowserClient.from("pack_recipients").insert({
+        pack_id: pack.id,
+        recipient_id: recipient.id,
+        custom_message: formData.message,
+        delivery_channel: "email",
+        requires_manual_confirmation: formData.manualUnlock,
+      });
+
+      if (linkError) throw linkError;
+
+      // 5. Créer la règle de déclenchement
+      const { error: ruleError } = await supabaseBrowserClient.from("trigger_rules").insert({
+        pack_id: pack.id,
+        type: "deadman",
+        config: {
+          inactivity_days: formData.inactivityDays,
+        },
+        notification_sequence: [
+          { delay_days: 0, channel: "email" },
+          { delay_days: 7, channel: "email" },
+          { delay_days: 30, channel: "email" },
+        ],
+      });
+
+      if (ruleError) throw ruleError;
+
+      // Nettoyer le localStorage et rediriger
+      localStorage.removeItem(STORAGE_KEY);
+      router.push(`/packs/${pack.id}/created`);
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : "Erreur lors de la sauvegarde du pack.",
+      );
+      setIsSaving(false);
+    }
+  }, [formData, router]);
+
+  // Charger depuis localStorage au démarrage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          setFormData({ ...defaultFormData, ...parsed });
+        } catch {
+          // Ignore invalid JSON
+        }
+      }
+    }
+  }, []);
+
+  // Vérifier l'auth au chargement et à chaque changement de step
+  useEffect(() => {
+    const checkAuth = async () => {
+      if (!supabaseBrowserClient) return;
+      const {
+        data: { session },
+      } = await supabaseBrowserClient.auth.getSession();
+      setIsAuthenticated(!!session);
+    };
+    checkAuth();
+
+    // Écouter les changements d'auth
+    if (supabaseBrowserClient) {
+      const {
+        data: { subscription },
+      } = supabaseBrowserClient.auth.onAuthStateChange((_event, session) => {
+        setIsAuthenticated(!!session);
+        if (session && currentStep === STEPS.length - 1) {
+          // Si on vient de s'authentifier et qu'on est sur l'étape de sauvegarde, sauvegarder automatiquement
+          handleSavePack();
+        }
+      });
+      return () => subscription.unsubscribe();
+    }
+  }, [currentStep, handleSavePack]);
 
   const progressValue = ((currentStep + 1) / STEPS.length) * 100;
 
@@ -82,6 +238,9 @@ export function OnboardingFlow() {
   const handleNext = () => {
     if (currentStep < STEPS.length - 1) {
       setCurrentStep((prev) => prev + 1);
+    } else if (currentStep === STEPS.length - 1 && isAuthenticated) {
+      // Si on est sur la dernière étape et authentifié, sauvegarder
+      handleSavePack();
     }
   };
 
@@ -94,7 +253,14 @@ export function OnboardingFlow() {
   const updateField =
     <T extends keyof typeof formData>(field: T) =>
     (value: (typeof formData)[T]) => {
-      setFormData((prev) => ({ ...prev, [field]: value }));
+      setFormData((prev) => {
+        const updated = { ...prev, [field]: value };
+        // Sauvegarder dans localStorage à chaque changement
+        if (typeof window !== "undefined") {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        }
+        return updated;
+      });
     };
 
   const isLastStep = currentStep === STEPS.length - 1;
@@ -107,23 +273,23 @@ export function OnboardingFlow() {
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-amber-600">
               MAD onboarding
             </p>
-            <h1 className="mt-4 text-4xl font-semibold text-slate-900">
+            <h1 className="mt-4 text-4xl font-semibold text-foreground">
               Préparez votre premier pack post-mortem
             </h1>
-            <p className="mt-4 text-base text-slate-600">
+            <p className="mt-4 text-base text-muted-foreground">
               Chaque étape est pensée pour guider un utilisateur non technique. Nous posons une
               question à la fois, avec un bref contexte pour rester serein.
             </p>
-            <div className="mt-6 rounded-2xl bg-gradient-to-r from-slate-900 to-slate-800 p-4 text-sm text-white">
+            <div className="mt-6 rounded-2xl bg-gradient-to-r from-primary to-primary/80 p-4 text-sm text-primary-foreground">
               <p className="font-medium">Conseil</p>
-              <p className="mt-1 text-white/80">
+              <p className="mt-1 text-primary-foreground/80">
                 Répondez spontanément, vous pourrez toujours ajuster votre pack avant de le
                 verrouiller.
               </p>
             </div>
           </div>
 
-          <Card className="border-none bg-white/80 shadow-lg shadow-slate-200/60 backdrop-blur">
+          <Card className="border-none bg-card/80 shadow-lg backdrop-blur">
             <CardHeader>
               <CardTitle>Parcours en 4 temps</CardTitle>
               <CardDescription>
@@ -140,10 +306,10 @@ export function OnboardingFlow() {
                       <span
                         className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold ${
                           isDone
-                            ? "bg-emerald-100 text-emerald-600"
+                            ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400"
                             : isActive
-                              ? "bg-amber-100 text-amber-700"
-                              : "bg-slate-100 text-slate-500"
+                              ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                              : "bg-muted text-muted-foreground"
                         }`}
                       >
                         {index + 1}
@@ -151,12 +317,12 @@ export function OnboardingFlow() {
                       <div>
                         <p
                           className={`font-medium ${
-                            isActive ? "text-slate-900" : "text-slate-600"
+                            isActive ? "text-foreground" : "text-muted-foreground"
                           }`}
                         >
                           {step.title}
                         </p>
-                        <p className="text-slate-500">{step.description}</p>
+                        <p className="text-muted-foreground">{step.description}</p>
                       </div>
                     </li>
                   );
@@ -165,7 +331,7 @@ export function OnboardingFlow() {
             </CardContent>
           </Card>
 
-          <Card className="border-none bg-gradient-to-br from-white to-slate-50 shadow-lg shadow-slate-200/70">
+          <Card className="border-none bg-gradient-to-br from-card to-muted shadow-lg">
             <CardHeader>
               <CardTitle>Récap express</CardTitle>
               <CardDescription>Ce que vous avez déjà défini pour ce pack.</CardDescription>
@@ -174,10 +340,10 @@ export function OnboardingFlow() {
               {summaryItems.map((item) => (
                 <div
                   key={item.label}
-                  className="rounded-2xl border border-slate-100 bg-white/80 p-4 text-sm"
+                  className="rounded-2xl border border-border bg-card/80 p-4 text-sm"
                 >
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">{item.label}</p>
-                  <p className="mt-2 text-base font-medium text-slate-900">{item.value}</p>
+                  <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{item.label}</p>
+                  <p className="mt-2 text-base font-medium text-foreground">{item.value}</p>
                 </div>
               ))}
             </CardContent>
@@ -185,25 +351,25 @@ export function OnboardingFlow() {
         </aside>
 
         <main className="flex-1">
-          <Card className="border-none bg-white/90 shadow-2xl shadow-slate-200/70 backdrop-blur">
+          <Card className="border-none bg-card/90 shadow-2xl backdrop-blur">
             <CardHeader className="space-y-4">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-500">
                     Étape {currentStep + 1} / {STEPS.length}
                   </p>
-                  <CardTitle className="text-3xl text-slate-900">{STEPS[currentStep]?.title}</CardTitle>
+                  <CardTitle className="text-3xl text-foreground">{STEPS[currentStep]?.title}</CardTitle>
                 </div>
                 <motion.span
                   key={currentStep}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="text-sm text-slate-500"
+                  className="text-sm text-muted-foreground"
                 >
                   {stepDescription}
                 </motion.span>
               </div>
-              <Progress value={progressValue} className="h-2 rounded-full bg-slate-100" />
+              <Progress value={progressValue} className="h-2 rounded-full bg-muted" />
             </CardHeader>
             <CardContent className="space-y-8">
               <AnimatePresence mode="wait">
@@ -226,7 +392,7 @@ export function OnboardingFlow() {
                         placeholder="Ex: Accès familiaux sécurisés"
                         className="h-12 text-base"
                       />
-                      <Label htmlFor="packSummary" className="text-sm text-slate-500">
+                      <Label htmlFor="packSummary" className="text-sm text-muted-foreground">
                         Résumé rapide
                       </Label>
                       <Input
@@ -259,7 +425,7 @@ export function OnboardingFlow() {
                           placeholder="agnes@email.com"
                         />
                       </div>
-                      <div className="md:col-span-2 rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-4 text-sm text-slate-600">
+                      <div className="md:col-span-2 rounded-2xl border border-dashed border-border bg-muted/60 p-4 text-sm text-muted-foreground">
                         Nous vérifierons ce destinataire avant libération pour éviter les erreurs et
                         garantir un audit clair.
                       </div>
@@ -276,7 +442,7 @@ export function OnboardingFlow() {
                         placeholder="Expliquez ce que contient le pack et comment agir."
                         className="min-h-[160px] resize-none text-base"
                       />
-                      <p className="text-sm text-slate-500">
+                      <p className="text-sm text-muted-foreground">
                         Astuce : gardez un ton simple et ajoutez les instructions critiques dans les pièces
                         jointes chiffrées.
                       </p>
@@ -298,17 +464,17 @@ export function OnboardingFlow() {
                             updateField("inactivityDays")(Number(event.target.value))
                           }
                         />
-                        <p className="text-sm text-slate-500">
+                        <p className="text-sm text-muted-foreground">
                           Nous envoyons plusieurs emails de réveil avant de considérer votre compte inactif.
                           Vous pouvez ajuster ce délai à tout moment.
                         </p>
                       </div>
 
-                      <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                      <div className="flex items-center justify-between rounded-2xl border border-border bg-muted/70 p-4">
                         <div>
-                          <p className="font-medium text-slate-900">Double validation</p>
-                          <p className="text-sm text-slate-500">
-                            Un membre de l’équipe MAD confirme chaque libération sensible.
+                          <p className="font-medium text-foreground">Double validation</p>
+                          <p className="text-sm text-muted-foreground">
+                            Un membre de l'équipe MAD confirme chaque libération sensible.
                           </p>
                         </div>
                         <Tooltip>
@@ -329,10 +495,47 @@ export function OnboardingFlow() {
                       </div>
                     </div>
                   )}
+
+                  {currentStep === 4 && (
+                    <div className="space-y-6">
+                      {!isAuthenticated ? (
+                        <>
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-6">
+                            <p className="text-sm font-medium text-amber-900">
+                              Connectez-vous pour sauvegarder votre pack
+                            </p>
+                            <p className="mt-2 text-sm text-amber-700">
+                              Vos données sont déjà sauvegardées localement. Une fois connecté, votre pack
+                              sera enregistré définitivement et vous accéderez à votre dashboard.
+                            </p>
+                          </div>
+                          <div className="rounded-2xl border border-border bg-muted/50 p-6">
+                            <AuthPanel />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-6">
+                            <p className="text-sm font-medium text-emerald-900">
+                              ✓ Vous êtes connecté
+                            </p>
+                            <p className="mt-2 text-sm text-emerald-700">
+                              Cliquez sur &ldquo;Sauvegarder mon pack&rdquo; pour finaliser la création.
+                            </p>
+                          </div>
+                          {saveError && (
+                            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                              {saveError}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </motion.div>
               </AnimatePresence>
 
-              <div className="flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:justify-between">
+              <div className="flex flex-col gap-3 border-t border-border pt-6 sm:flex-row sm:justify-between">
                 <Button
                   variant="ghost"
                   onClick={handleBack}
@@ -343,9 +546,16 @@ export function OnboardingFlow() {
                 </Button>
                 <Button
                   onClick={handleNext}
-                  className="flex-1 justify-center bg-slate-900 text-white hover:bg-slate-800"
+                  disabled={isSaving || (isLastStep && !isAuthenticated)}
+                  className="flex-1 justify-center bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
-                  {isLastStep ? "Pré-valider mon pack" : "Étape suivante"}
+                  {isSaving
+                    ? "Sauvegarde en cours..."
+                    : isLastStep && isAuthenticated
+                      ? "Sauvegarder mon pack"
+                      : isLastStep
+                        ? "Connectez-vous pour sauvegarder"
+                        : "Étape suivante"}
                 </Button>
               </div>
             </CardContent>
