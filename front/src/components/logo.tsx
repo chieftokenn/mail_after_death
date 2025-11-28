@@ -87,16 +87,88 @@ export function Logo({ className, size = "md", variant = "dark" }: LogoProps) {
 
 export function LogoText({ className, variant = "dark" }: { className?: string; variant?: "light" | "dark" }) {
   const isLight = variant === "light";
-  const textColor = isLight ? "text-white" : "text-foreground";
+  const blueColor = isLight ? "#60a5fa" : "#1e40af";
+  const yellowColor = isLight ? "#fbbf24" : "#f59e0b";
+  const darkBlue = isLight ? "#3b82f6" : "#1e3a8a";
+  const textColor = isLight ? "#ffffff" : "#1e40af";
 
   return (
-    <div className={cn("flex flex-col items-center justify-center gap-0.5", className)}>
-      <div className="flex-shrink-0 flex items-center justify-center">
-        <Logo size="lg" variant={variant} />
-      </div>
-      <span className={cn("text-sm font-medium tracking-wider uppercase opacity-70 text-center", textColor)}>
-        Mail After Death
-      </span>
+    <div className={cn("flex items-center justify-center", className)}>
+      <svg
+        viewBox="0 0 200 140"
+        className="h-40 w-auto"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        {/* Lettre M - avec cadenas intégré - descendue */}
+        <path
+          d="M 30 40 L 30 80 L 40 80 L 40 60 L 45 65 L 50 60 L 50 80 L 60 80 L 60 40 L 50 40 L 45 45 L 40 40 Z"
+          fill={darkBlue}
+        />
+        {/* Cadenas jaune sur le M */}
+        <rect
+          x="42"
+          y="35"
+          width="6"
+          height="7"
+          rx="1"
+          fill={yellowColor}
+        />
+        <path
+          d="M 43 35 L 43 30 Q 43 28 45 28 Q 47 28 47 30 L 47 35"
+          stroke={yellowColor}
+          strokeWidth="1.5"
+          fill="none"
+          strokeLinecap="round"
+        />
+
+        {/* Lettre A - avec barre de sécurité jaune - descendue */}
+        <path
+          d="M 65 40 L 60 80 L 70 80 L 75 40 Z"
+          fill={darkBlue}
+        />
+        <line
+          x1="66"
+          y1="60"
+          x2="69"
+          y2="60"
+          stroke={yellowColor}
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+
+        {/* Lettre D - avec bouclier de sécurité - descendue */}
+        <path
+          d="M 80 40 L 80 80 L 95 80 Q 105 80 105 60 Q 105 40 95 40 Z"
+          fill={darkBlue}
+        />
+        {/* Icône de bouclier jaune dans le D */}
+        <path
+          d="M 88 55 L 88 65 L 92 65 L 92 55 Q 92 53 90 53 Q 88 53 88 55 Z"
+          fill={yellowColor}
+        />
+        <path
+          d="M 88 55 L 90 53 L 92 55"
+          stroke={yellowColor}
+          strokeWidth="1"
+          fill="none"
+        />
+
+        {/* Texte "Mail After Death" aligné au niveau du logo */}
+        <text
+          x="67.5"
+          y="95"
+          fill={textColor}
+          fontSize="11"
+          fontFamily="system-ui, -apple-system, sans-serif"
+          fontWeight="500"
+          letterSpacing="0.15em"
+          textAnchor="middle"
+          opacity="0.7"
+        >
+          MAIL AFTER DEATH
+        </text>
+      </svg>
     </div>
   );
 }

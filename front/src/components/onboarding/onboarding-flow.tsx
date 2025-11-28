@@ -269,7 +269,7 @@ export function OnboardingFlow() {
     <TooltipProvider>
       <div className="mx-auto flex max-w-6xl flex-col gap-10 lg:flex-row">
         <aside className="space-y-6 lg:w-2/5">
-          <div className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-amber-100/50 backdrop-blur">
+          <div className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-amber-100/50 backdrop-blur dark:border-white/10 dark:bg-slate-900/80 dark:shadow-blue-900/60">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-amber-600">
               MAD onboarding
             </p>

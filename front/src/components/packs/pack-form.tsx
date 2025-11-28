@@ -449,7 +449,7 @@ export function PackForm({ packId }: PackFormProps = {}) {
   // Mode création : formulaire avec étapes animées
   return (
     <TooltipProvider>
-      <Card className="border-none bg-white shadow-lg">
+      <Card className="border border-border/70 bg-card shadow-2xl shadow-amber-900/10 dark:shadow-black/30">
         <CardHeader className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
